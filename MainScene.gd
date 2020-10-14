@@ -3,7 +3,7 @@ extends PanelContainer
 const LOCAL_PORT = 5999
 const HANDSHAKE_IP = "35.189.13.116"
 const HANDSHAKE_PORT = 5189
-const IS_HANDSHAKE_SERVER = true #set true for server exports
+const IS_HANDSHAKE_SERVER = false #set true for server exports
 
 enum MESSAGE_TYPE {GAME_START, MOVE}
 
@@ -75,12 +75,12 @@ func _ready():
 func _connect_pressed():
 	_connect_button.disabled = true
 	_connect_button.text = '. . .'
-	Network.auto_connect()
 	var local_ip = _local_ip_options.get_item_text(_local_ip_options.get_selected_id())
 	Network.set_network_details({
 		Network.DETAILS_KEY_LOCAL_IP: local_ip
 	})
-
+	Network.auto_connect()
+	
 func _disconnect_pressed():
 	_disconnect_button.disabled = true
 	Network.reset()
