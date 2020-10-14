@@ -53,7 +53,6 @@ func init():
 		_udp_socket = CUSTOM_UDP_WRAPPER_SCRIPT.new()
 		add_child(_udp_socket)
 		_udp_socket.init(
-			port,
 			Network.get_network_detail(Network.DETAILS_KEY_UDP_TIMEOUT_SECS),
 			null,
 			Network._UDP_SOCKET_MINIMISATION_KEYS
@@ -61,7 +60,7 @@ func init():
 		
 		_udp_socket.connect('packet_received', self, '_udp_packet_received')
 		_udp_socket.connect('any_packet_received', self, '_udp_any_packet_received')
-	if _udp_socket.start_listening() != OK:
+	if _udp_socket.start_listening(port) != OK:
 		print("Error initting handshake at port %s" % port)
 		reset()
 		return
@@ -131,15 +130,13 @@ func _udp_packet_received(data, sender_address, packet_id):
 		var host_name = data['ping']
 		if (_host_name_to_registration.has(host_name)
 		and _host_name_to_registration[host_name]['unique-id'] == sender_id):
-			#print('hs resetting timeout for ' + host_name)
-			#_host_name_to_registration[host_name]['timeout'] = Network.get_network_detail(Network.DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY)
 			_udp_socket.send_data({}, sender_address, packet_id)
 		else:
 			var msg = 'Host does not exist or is not you.'
 			_udp_socket.send_data({'error':msg}, sender_address, packet_id)
 	
 	elif data.has('drop-me') and typeof(data['drop-me']) == TYPE_STRING:
-		var host_name = data['drop-me'][0]
+		var host_name = data['drop-me']
 		_attempt_drop_host(host_name, sender_address, sender_id)
 	
 
@@ -447,7 +444,7 @@ func _attempt_drop_host(host_name, host_address, sender_id):
 			if not host_names_to_remove.has(existing_host_name):
 				host_names_to_remove.push_back(existing_host_name)
 	for existing_host_name in host_names_to_remove:
-		print('Dropping %s' % existing_host_name)
+		print('dropping host %s' % host_name)
 		_host_unique_id_to_registration.erase(_host_name_to_registration[existing_host_name]['unique-id'])
 		_host_name_to_registration.erase(existing_host_name)
 	var data = {
@@ -474,7 +471,6 @@ func _process(delta):
 	for host_name in _host_name_to_registration:
 		var registration = _host_name_to_registration[host_name]
 		registration['timeout'] -= delta
-		#print(registration['timeout'])
 		if registration['timeout'] < 0:
 			hosts_to_remove.push_back(host_name)
 	for host_name in hosts_to_remove:

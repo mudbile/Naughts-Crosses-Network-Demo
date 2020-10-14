@@ -44,9 +44,9 @@ const NUM_BYTES_IN_PARCEL_BLOCK = 450
 
 var fapi = preload('./FuncAwaitAPI.gd').new()
 
+var _dummy_socket = PacketPeerUDP.new()
 var _udp_socket = PacketPeerUDP.new()
 var _key_generator = KeyGenerator.new()
-var _wait_infos = {}
 var _inited = false
 #this is 0 if not listening, increments each time
 #start_listening is called, and we only stop listening once it
@@ -64,11 +64,11 @@ var _unminified_keys_to_minified_keys = {}
 var _minified_keys_to_unminified_keys = {}
 var _outgoing_parcel_info = {}
 var _incoming_parcel_info = {}
+var _wait_infos = {}
 
-
-func init(local_port, packet_timeout, data_to_add_to_every_packet=null, minimisation_map={}):
-	stop_listening()
-	_local_port = local_port
+func init(packet_timeout, data_to_add_to_every_packet=null, minimisation_map={}):
+	if _inited:
+		return
 	_packet_timeout = packet_timeout
 	_data_to_add_to_every_packet = data_to_add_to_every_packet
 	_unminified_keys_to_minified_keys = minimisation_map
@@ -78,35 +78,41 @@ func init(local_port, packet_timeout, data_to_add_to_every_packet=null, minimisa
 
 
 func clear():
-	_wait_infos.clear()
 	_outgoing_parcel_info.clear()
 	_incoming_parcel_info.clear()
-
+	_wait_infos.clear()
 
 
 func is_inited():
 	return _inited
 
 
-
+func get_port():
+	return _local_port
 
 func is_listening():
+	
 	return _listening_num > 0
 
-func start_listening():
+
+#if already listeining, will not change port but will return OK
+#each OKed listen should be paired with a stop_listening
+func start_listening(local_port):
 	if not _inited:
 		print('Error: cannot listen on uninitted UDPSocketWrapper')
 		return
-	if _listening_num < 0:
-		_listening_num = 0
-	_listening_num += 1
+	var err = OK
+	var port
 	if not _udp_socket.is_listening():
-		var err = _udp_socket.listen(_local_port)
-		return err
+		err = _udp_socket.listen(local_port)
+		if err == OK:
+			_local_port = local_port
+	if err == OK:
+		if _listening_num < 0:
+			_listening_num = 0
+		_listening_num += 1
+	return err
 
-func force_stop_listening_override_counter(resume_wait_funcs_as_timeout=true):
-	_listening_num = 0
-	stop_listening(resume_wait_funcs_as_timeout)
 
 func stop_listening(resume_wait_funcs_as_timeout=true):
 	_listening_num -= 1
@@ -123,10 +129,7 @@ func stop_listening(resume_wait_funcs_as_timeout=true):
 		_udp_socket.close()
 	_outgoing_parcel_info.clear()
 	_incoming_parcel_info.clear()
-
-
-
-
+	_wait_infos.clear()
 
 
 
@@ -189,7 +192,7 @@ func send_data_wait_for_reply(data, address, replying_to_id=null):
 	var func_key = fapi.get_add_key()
 	info['func-key'] = func_key
 	if not _udp_socket.is_listening():
-		start_listening()
+		start_listening(_local_port)
 	_parcel_send_packet(info['data'], info['id'], replying_to_id, info['address'])
 	return func_key
 	
@@ -425,7 +428,7 @@ func _process(delta):
 					#if wait_info['reply-id'] != null:
 						#_full_ids_received_to_reply_sent[str(wait_info['address'])+str( wait_info['reply-id'])] =  wait_info['send-data']
 				wait_info['times-sent'] += 1
-				_parcel_send_existing_packet( wait_info['id'], wait_info['address'])
+				_parcel_send_existing_packet(wait_info['id'], wait_info['address'])
 				#_parcel_send_packet(wait_info['data'], wait_info['id'], wait_info['reply-id'], wait_info['address'])
 				#emit_signal('debug', 'resending to %s' % [wait_info['address'][0]])
 	for wait_info in timedout_waits:

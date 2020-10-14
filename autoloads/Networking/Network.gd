@@ -83,7 +83,7 @@ const CUSTOM_UDP_WRAPPER_SCRIPT = preload("./UDPSocketWrapper.gd")
 var key_generator = KeyGenerator.new()
 var fapi = preload('./FuncAwaitAPI.gd').new()
 
-var _player_is_host
+var _player_is_host #true on registerration complete, false on joined to host, else null
 var _host_player_name
 var _my_player_name
 var _is_accepting_new_clients
@@ -105,6 +105,7 @@ var _udp_socket
 #Network.get_player_names() in the host
 var _player_name_to_connection = {}
 var _player_names_no_handshake = []
+var _other_player_names_no_handshake = []
 
 var _faulty_connections = []
 var _give_up_on_faulty_connections = null#null=undecided
@@ -149,7 +150,7 @@ enum {
 	DETAILS_KEY_HANDSHAKE_PORT,
 	DETAILS_KEY_HANDSHAKE_IP,
 	DETAILS_KEY_LOCAL_IPS,#note: use get_local_ips instead of get_network_detail
-	DETAILS_KEY_LOCAL_PORT,
+	DETAILS_KEY_LOCAL_PORTS,
 	DETAILS_KEY_UDP_TIMEOUT_SECS,
 	DETAILS_KEY_PING_INTERVAL_SECS,
 	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY
@@ -158,7 +159,7 @@ var _network_details = {
 	DETAILS_KEY_HANDSHAKE_PORT: 5111,
 	DETAILS_KEY_HANDSHAKE_IP: '127.0.0.1',
 	DETAILS_KEY_LOCAL_IPS: 'auto', #if 'auto', will attempt them all
-	DETAILS_KEY_LOCAL_PORT: 5141,
+	DETAILS_KEY_LOCAL_PORTS: [5141],#as good a default as any, I suppose!
 	DETAILS_KEY_UDP_TIMEOUT_SECS: 10,
 	DETAILS_KEY_PING_INTERVAL_SECS: 8,
 	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY: 20
@@ -202,13 +203,15 @@ func get_other_player_names(include_handshake = false):
 		names.push_back(_my_player_name)
 	return names
 func is_player_host():
-	return _player_is_host
+	return _player_is_host #true when registered
+func is_player_client():
+	return _player_is_host != null and not _player_is_host
+func is_player_client_or_host():
+	return _player_is_host != null
 
 func get_player_name():
 	return _my_player_name
 
-func is_networking():
-	return _is_networking
 
 func stop_accepting_new_client():
 	_is_accepting_new_clients = false
@@ -253,6 +256,7 @@ func reset():
 	_packets_to_process_once_name_joined.clear()
 	_player_name_to_connection.clear()
 	_player_names_no_handshake.clear()
+	_other_player_names_no_handshake.clear()
 	_faulty_connections.clear()
 	_give_up_on_faulty_connections = null
 	_sent_message_ids_not_received_by_all.clear()
@@ -284,25 +288,34 @@ func test_port_valid_data_format(port):
 func register_as_host(player_name, extra_info=null):
 	reset()
 	var last_known_net_id = _net_id
-	_is_networking = true
+	
+	_player_names_no_handshake = [player_name]
 	
 	var local_ips = get_local_ips()
-	var local_port = get_network_detail(DETAILS_KEY_LOCAL_PORT)
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
 	var handshake_address = get_handshake_address()
 	
 	if player_name == HANDSHAKE_SERVER_PLAYER_NAME:
 		emit_signal('register_host_failed', 'Invalid player name.')
-	_udp_socket.init(local_port,
+	
+	
+	_udp_socket.init(
 		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
 		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
 	)
-	if _udp_socket.start_listening() != OK:
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
 		emit_signal('register_host_failed',
-			"Error initting udp socket to listen at %s" % local_port
+			"Error initting udp socket to listen at one of %s" % local_ports
 		)
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
-	
+
 	var init_handshake = false
 	if handshake_address[0] == ""  or handshake_address[0] == '127.0.0.1':
 		init_handshake = true
@@ -312,12 +325,12 @@ func register_as_host(player_name, extra_info=null):
 		if not Handshake.is_running():
 			Handshake.init()
 	
-	self._player_is_host = true
+	self._is_networking = true
 	self._my_player_name = player_name
 	self._host_player_name = player_name
 	
 	var reg_data = Handshake._make_host_registration_data(
-		_my_player_name, local_ips, local_port, extra_info
+		_my_player_name, local_ips, _udp_socket.get_port(), extra_info
 	)
 	var func_key = _udp_socket.send_data_wait_for_reply( 
 		reg_data, handshake_address
@@ -330,12 +343,14 @@ func register_as_host(player_name, extra_info=null):
 	
 	if func_result['timed-out']:
 		emit_signal('register_host_failed', 'Handshake server unreachable.')
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	var reply_data = func_result['reply-data']
 	if reply_data.has('error'):
 		emit_signal('register_host_failed', reply_data['error'])
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	
 	_add_connection_to_handshake(func_result['address'])
@@ -355,10 +370,10 @@ func register_as_host(player_name, extra_info=null):
 func join_host(player_name, host_player_name, extra_info_for_host=null):
 	reset()
 	var last_known_net_id = _net_id
-	_is_networking = true
+	_player_names_no_handshake = [player_name]
 	
 	var local_ips = get_local_ips()
-	var local_port = get_network_detail(DETAILS_KEY_LOCAL_PORT)
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
 	var handshake_address = get_handshake_address()
 	
 	if player_name == HANDSHAKE_SERVER_PLAYER_NAME:
@@ -366,26 +381,30 @@ func join_host(player_name, host_player_name, extra_info_for_host=null):
 		return
 	
 	_udp_socket.init(
-		local_port,
 		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
 		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
 	)
-	if _udp_socket.start_listening() != OK:
-		emit_signal(
-			'join_host_failed',
-			"Error initting udp socket to listen at %s" % local_port
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
+		emit_signal('join_host_failed',
+			"Error initting udp socket to listen at one of %s" % local_ports
 		)
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	 
-	self._player_is_host = false
+	self._is_networking = true
 	self._my_player_name = player_name
 	self._host_player_name = host_player_name
 	
 	_attempting_to_join_host = true
 	
 	var req_data = Handshake._make_client_join_request_data(
-		_my_player_name, _host_player_name, local_ips, local_port
+		_my_player_name, _host_player_name, local_ips, _udp_socket.get_port()
 	)
 	var func_key = _udp_socket.send_data_wait_for_reply( 
 		req_data, handshake_address
@@ -398,12 +417,14 @@ func join_host(player_name, host_player_name, extra_info_for_host=null):
 	
 	if func_result['timed-out']:
 		emit_signal('join_host_failed', 'Handshake server unreachable.')
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	var reply_data = func_result['reply-data']
 	if reply_data.has('error'):
 		emit_signal('join_host_failed', reply_data['error'])
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	
 	#note: we don't reply to handshake because atm
@@ -435,22 +456,30 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 			player_name += CHARS[randi() % CHARS.length()]
 	var last_known_net_id = _net_id
 	_is_networking = true
+	_player_names_no_handshake = [player_name]
 	
 	var local_ips = get_local_ips()
-	var local_port = get_network_detail(DETAILS_KEY_LOCAL_PORT)
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
 	var handshake_address = get_handshake_address()
 	
 	if player_name == HANDSHAKE_SERVER_PLAYER_NAME:
 		emit_signal('auto_connect_failed', 'Invalid player name.')
-	_udp_socket.init(local_port,
+	
+	_udp_socket.init(
 		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
 		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
 	)
-	if _udp_socket.start_listening() != OK:
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
 		emit_signal('auto_connect_failed',
-			"Error initting udp socket to listen at %s" % local_port
+			"Error initting udp socket to listen at one of %s" % local_ports
 		)
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	
 	var init_handshake = false
@@ -463,7 +492,7 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 			Handshake.init()
 	
 	var req_data = Handshake._make_auto_connect_data(
-		player_name, local_ips, local_port, extra_host_info, extra_client_info
+		player_name, local_ips, _udp_socket.get_port(), extra_host_info, extra_client_info
 	)
 	var func_key = _udp_socket.send_data_wait_for_reply( 
 		req_data, handshake_address
@@ -476,12 +505,14 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 	
 	if func_result['timed-out']:
 		emit_signal('auto_connect_failed', 'Handshake server unreachable.')
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	var reply_data = func_result['reply-data']
 	if reply_data.has('error'):
 		emit_signal('auto_connect_failed', reply_data['error'])
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	
 	if reply_data.has('host-registered'):
@@ -494,7 +525,7 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 		emit_signal('registered_as_host', _my_player_name, get_handshake_address())
 		emit_signal('player_joined', _my_player_name)
 	elif reply_data.has('handshake-info-for-client'):
-		self._player_is_host = false
+		#self._player_is_host = false
 		self._my_player_name = player_name
 		self._host_player_name = reply_data['handshake-info-for-client']
 		_attempting_to_join_host = true
@@ -526,7 +557,7 @@ host_local_ips, host_local_port, host_global_address, extra_info):
 	var func_keys = []
 	for host_local_ip in host_local_ips:
 		if host_local_ip != '127.0.0.1' and not my_local_ips.has(host_local_ip):
-			var host_local_address = [[host_local_ip], host_local_port]
+			var host_local_address = [host_local_ip, host_local_port]
 			func_keys.push_back(_udp_socket.send_data_wait_for_reply({
 					'extra-info': extra_info,
 					'used-local': true,
@@ -561,15 +592,18 @@ host_local_ips, host_local_port, host_global_address, extra_info):
 		return
 	if func_result['timed-out']:#yeah i know, but if this one timed out screw it...
 		emit_signal('join_host_failed', 'Host unreachable.')
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	var reply_data = func_result['reply-data']
 	if reply_data.has('error'):
 		emit_signal('join_host_failed', reply_data['error'])
-		reset()
+		if last_known_net_id == _net_id:
+			reset()
 		return
 	
 	_host_address = func_result['address']
+	_player_is_host = false
 	var func_key = _udp_socket.send_data_wait_for_reply( 
 		{'players-inited':true}, _host_address
 	)
@@ -583,9 +617,10 @@ host_local_ips, host_local_port, host_global_address, extra_info):
 	
 	for player_name in reply_data['init-players']:
 		var player_id = reply_data['init-players'][player_name]
-		if not _player_name_to_connection.has(player_name):
-			_add_psuedo_connection(player_name, player_id)
-			emit_signal('player_joined', player_name)
+		if player_name != _my_player_name:
+			if not _player_name_to_connection.has(player_name):
+				_add_psuedo_connection(player_name, player_id)
+				emit_signal('player_joined', player_name)
 	
 	var packet_infos = _packets_to_process_once_joined_to_host
 	_packets_to_process_once_joined_to_host = []
@@ -648,12 +683,19 @@ func get_host_infos_from_handshake(handshake_address, extra_info={}):
 
 func _get_host_infos_from_handshake(f_key, handshake_address, extra_info):
 	var last_known_net_id = _net_id
-	if not _udp_socket.is_inited():
-		_udp_socket.init(get_network_detail(DETAILS_KEY_LOCAL_PORT),
-			get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-			{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-		)
-	_udp_socket.start_listening()
+	_udp_socket.init(
+		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
+		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
+	)
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
+		emit_signal('host_infos_request_completed', null)
+		return
 	
 	var func_key = _udp_socket.send_data_wait_for_reply( 
 		{'info-request':extra_info}, handshake_address
@@ -680,12 +722,19 @@ func get_misc_from_handshake(handshake_address, extra_info={}):
 
 func _get_misc_from_handshake(f_key, handshake_address, extra_info):
 	var last_known_net_id = _net_id
-	if not _udp_socket.is_inited():
-		_udp_socket.init(get_network_detail(DETAILS_KEY_LOCAL_PORT),
-			get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-			{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-		)
-	_udp_socket.start_listening()
+	_udp_socket.init(
+		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
+		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
+	)
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
+		emit_signal('misc_request_completed', null)
+		return
 	
 	var func_key = _udp_socket.send_data_wait_for_reply( 
 		{'misc-request':extra_info}, handshake_address
@@ -740,7 +789,7 @@ func _udp_packet_received(data, sender_address, packet_id):
 					'add-player': client_name,
 					'add-player-idx': client_idx
 				}
-				for player_name in _player_names_no_handshake:
+				for player_name in _other_player_names_no_handshake:
 					if player_name == client_name:
 						pass
 					else:
@@ -803,7 +852,7 @@ func _udp_packet_received(data, sender_address, packet_id):
 			}
 			
 		var players = {}
-		for player in _player_names_no_handshake:
+		for player in _other_player_names_no_handshake:
 			players[player] = _player_name_to_connection[player]['idx']
 		players[client_name] = client_idx
 		_udp_socket.send_data( 
@@ -853,8 +902,6 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 			if connection['faulty-for-no-reply-to-f-keys'].empty():
 				_restore_connection(connection)
 	
-	if not _player_is_host:
-		pass
 	
 	var last_known_net_id = _net_id
 	#from handshake to host with client details
@@ -975,26 +1022,26 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 			_udp_socket.send_data({}, sender_address, packet_id)
 		data['message'] = data['forward-message']
 		data.erase('forward-message')
-		var players_to_send_to = data['to'].duplicate()
+		var players_to_send_to = data['to']
 		var me_included = players_to_send_to.has(_my_player_name)
-		if me_included:
-			players_to_send_to.erase(_my_player_name)
 		
 		var func_keys = []
 		for player_name in players_to_send_to:
-			if not _player_names_no_handshake.has(player_name):
+			if player_name == _my_player_name or not _player_names_no_handshake.has(player_name):
 				continue
 			var func_key = _send_to_connected_faulty_if_no_reply(data, player_name)
 			func_keys.push_back(func_key)
 		if me_included:
 			_packet_from_connected(data, null, null, null)
-		var completed_keys = []
-		while completed_keys.size() != func_keys.size():
+		while not func_keys.empty():
+			var new_func_keys = []
 			for key in func_keys:
-				if not fapi.is_func_ongoing(key):
-					completed_keys.push_back(key)
+				if fapi.is_func_ongoing(key):
+					new_func_keys.push_back(key)
+				else:
 					fapi.abandon_awaiting_func_completion(key)
-			if completed_keys.size() != func_keys.size():
+			func_keys = new_func_keys
+			if not func_keys.empty():
 				yield(self, '_send_to_connected_faulty_if_no_reply_completed')
 				if last_known_net_id != _net_id:
 					return
@@ -1007,7 +1054,19 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 		else:
 			var func_key = _send_to_connected_faulty_if_no_reply(d, data['from'])
 			fapi.abandon_awaiting_func_completion(func_key)
-	
+			
+	elif data.has('forward-unreliable-message'):
+		data['message'] = data['forward-unreliable-message']
+		data.erase('forward-unreliable-message')
+		var players_to_send_to = data['to']
+		var me_included = players_to_send_to.has(_my_player_name)
+		for to_name in data['to']:
+			if to_name == _my_player_name or not _player_names_no_handshake.has(to_name):
+				continue
+			var address = _player_name_to_connection[to_name]['player-address']
+			_udp_socket.send_data(data, address)
+		if me_included:
+			_packet_from_connected(data, null, null, null)
 	
 	elif data.has('message'):
 		
@@ -1028,9 +1087,7 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 				_packets_to_process_once_name_joined[from].push_back(process_later_data)
 				return
 			
-		var to = data['to']
-		var message = data['message']
-		emit_signal('message_received', from, to, message)
+		emit_signal('message_received', from, data['to'], data['message'])
 	
 	elif data.has('message-received-by-all'):
 		_udp_socket.send_data({}, sender_address, packet_id)
@@ -1047,34 +1104,21 @@ func send_message_to_host(message):
 #func key returned will be over when all players got message
 #yield for "sent_message_received_by_all"
 func send_message_to_all_but_self(message):
-	var specific_player_names =  _player_names_no_handshake.duplicate()
-	specific_player_names.erase(_my_player_name)
-	return send_message(message, specific_player_names)
+	return send_message(message, _other_player_names_no_handshake)
 
 #func key returned will be over when all players got message
 #yield for "sent_message_received_by_all"
 func send_message(message, specific_player_names=null):
-	if not _is_networking:
+	if _player_is_host == null:
 		return
 	var func_key = fapi.get_add_key()
 	_send_message(func_key, message, specific_player_names)
 	return func_key
-	
+
 func _send_message(f_key, message, specific_player_names=null):
 	var last_known_net_id = _net_id
 	if specific_player_names == null:
-		specific_player_names = _player_names_no_handshake.duplicate()
-		if _player_is_host:
-			specific_player_names.push_back(_my_player_name)
-	else:
-		var temp = []
-		for player_name in _player_names_no_handshake:
-			if specific_player_names.has(player_name):
-				temp.push_back(player_name)
-		if specific_player_names.has(_my_player_name):
-			if _player_is_host:
-				temp.push_back(_my_player_name)
-		specific_player_names = temp
+		specific_player_names = _player_names_no_handshake
 	
 	var self_included = specific_player_names.has(_my_player_name)
 	if self_included and specific_player_names.size() == 1:
@@ -1107,6 +1151,39 @@ func _send_message(f_key, message, specific_player_names=null):
 	
 	fapi.abandon_awaiting_func_completion(f_key)
 	emit_signal('sent_message_received_by_all')
+
+
+func send_unreliable_message_to_host(message):
+	var specific_player_names = [_host_player_name]
+	return send_unreliable_message(message, specific_player_names)
+
+func send_unreliable_message_to_all_but_self(message):
+	return send_unreliable_message(message, _other_player_names_no_handshake)
+
+func send_unreliable_message(message, specific_player_names=null):
+	if specific_player_names == null:
+		specific_player_names = _player_names_no_handshake
+
+	
+	var self_included = specific_player_names.has(_my_player_name)
+	if self_included and specific_player_names.size() == 1:
+		emit_signal('message_received', _my_player_name, [_my_player_name], message)
+		return
+	
+	_sent_message_id_keeper += 1
+	var message_id = _sent_message_id_keeper 
+	
+	var data = {
+		'forward-unreliable-message': message, 
+		'to': specific_player_names,
+		'from': _my_player_name,
+		'#': message_id
+	}
+	
+	if _player_is_host:
+		_packet_from_connected(data, null, null, null)
+	else:
+		_udp_socket.send_data(data, _host_address)
 
 
 
@@ -1227,6 +1304,7 @@ func _drop_connection(connection, no_signals=false, send_dropme=true, coming_fro
 	var player_name = connection['player-name']
 	_player_name_to_connection.erase(player_name)
 	_player_names_no_handshake.erase(player_name)
+	_other_player_names_no_handshake.erase(player_name)
 	if _faulty_connections.has(connection):
 		_faulty_connections.erase(connection)
 	connection['removed'] = true
@@ -1244,7 +1322,7 @@ func _drop_connection(connection, no_signals=false, send_dropme=true, coming_fro
 			var dropme_data = _make_drop_data(_my_player_name, _idx)
 			_udp_socket.send_data(dropme_data, connection['player-address'])
 			var drophim_data = _make_drop_data(player_name, connection['idx'])
-			for p_name in _player_names_no_handshake:
+			for p_name in _other_player_names_no_handshake:
 				var func_key = _send_to_connected_faulty_if_no_reply(drophim_data, p_name)
 				fapi.abandon_awaiting_func_completion(func_key)
 		
@@ -1383,6 +1461,7 @@ func __add_base_connection(player_name, player_address, player_idx, is_handshake
 	_player_name_to_connection[player_name] = connection
 	if not is_handshake:
 		_player_names_no_handshake.push_back(player_name)
+		_other_player_names_no_handshake.push_back(player_name)
 	return connection
 
 

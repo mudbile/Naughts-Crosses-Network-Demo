@@ -1,11 +1,11 @@
 extends PanelContainer
 
-const LOCAL_PORT = 5999
+const LOCAL_PORTS = [5999, 6000]
 const HANDSHAKE_IP = '192.168.1.54'
 const HANDSHAKE_PORT = 5189
-const IS_HANDSHAKE_SERVER = true #set true for server exports
+const IS_HANDSHAKE_SERVER = false #set true for server exports
 
-enum MESSAGE_TYPE {GAME_START, MOVE}
+enum MESSAGE_TYPE {GAME_START, MOVE, MOUSE_PRESSED_DOWN}
 
 const TOKEN_TO_TEXTURE = {
 	'naughts': preload("res://naught.png"),
@@ -35,7 +35,8 @@ var _current_board
 var _num_moves_made
 var _player_token
 var _is_my_turn
-var _update_server_status_countdown = 3 if not IS_HANDSHAKE_SERVER else null
+var _client_points = []
+var _update_server_status_countdown = 0.5 if not IS_HANDSHAKE_SERVER else null
 
 func _ready():
 	_connect_button.connect("pressed", self, "_connect_pressed")
@@ -43,7 +44,7 @@ func _ready():
 	randomize()
 	
 	Network.set_network_details({
-		Network.DETAILS_KEY_LOCAL_PORT: LOCAL_PORT,
+		Network.DETAILS_KEY_LOCAL_PORTS: LOCAL_PORTS,
 		Network.DETAILS_KEY_HANDSHAKE_IP: HANDSHAKE_IP,
 		Network.DETAILS_KEY_HANDSHAKE_PORT: HANDSHAKE_PORT,
 	})
@@ -63,7 +64,6 @@ func _ready():
 func _connect_pressed():
 	_connect_button.disabled = true
 	_connect_button.text = '. . .'
-	
 	Network.auto_connect()
 	
 func _disconnect_pressed():
@@ -100,7 +100,8 @@ func _registered_as_host(host_name, handshake_address):
 	_status_label.text = 'Waiting for player 2...'
 	_disconnect_button.visible = true
 	_connect_button.visible = false
-	_update_server_status_countdown = 0.5
+	_update_server_status_countdown = 0.1
+	_client_points = []
 
 func _register_host_failed(reason):
 	print('Failed to register host: %s' % reason)
@@ -109,7 +110,7 @@ func _joined_to_host(host_name, address):
 	_status_label.text = 'Connected!'
 	_disconnect_button.visible = true
 	_connect_button.visible = false
-	_update_server_status_countdown = 0.5
+	_update_server_status_countdown = 0.1
 
 func _join_host_failed(reason):
 	print('Failed to join host: %s' % reason)
@@ -118,7 +119,7 @@ func _client_joined(player_name, player_address, extra_info):
 	var first_player = player_name if randf() < 0.5 else Network.get_player_name()
 	Network.send_message({'type': MESSAGE_TYPE.GAME_START, 'next-player':first_player})
 	Network.drop_handshake()
-	_update_server_status_countdown = 0.5
+	_update_server_status_countdown = 0.1
 
 func _player_dropped(player_name):
 	print('Player dropped: %s' % player_name)
@@ -135,6 +136,7 @@ func _session_terminated():
 	_num_moves_made = null
 	_player_token = null
 	_is_my_turn = null
+	_client_points.clear()
 	update()
 
 func _message_received(from_player_name, to_players, message):
@@ -161,13 +163,22 @@ func _message_received(from_player_name, to_players, message):
 				_game_over(null)
 				return
 			_update_active_player(message['next-player'])
-
+			
+		MESSAGE_TYPE.MOUSE_PRESSED_DOWN:
+			_client_points.push_back(message['pos'])
+			update()
 
 ###################################
 ###################################
 
 
 func _process(delta):
+	if Network.is_player_client():
+		if Input.is_action_pressed("left_mouse"):
+			Network.send_unreliable_message_to_host({
+				'type': MESSAGE_TYPE.MOUSE_PRESSED_DOWN,
+				'pos': get_global_mouse_position()
+			})
 	if _update_server_status_countdown != null:
 		_update_server_status_countdown -= delta
 		if _update_server_status_countdown < 0:
@@ -227,4 +238,6 @@ func _draw():
 				var cell_pos = board_global_rect.position + coord * cell_size
 				var texture = TOKEN_TO_TEXTURE[_current_board[i]]
 				draw_texture_rect(texture, Rect2(cell_pos, cell_size),false)
-
+	
+	for point in _client_points:
+		draw_rect(Rect2(point, Vector2(25,25)),Color.green,true)
