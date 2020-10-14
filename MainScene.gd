@@ -1,9 +1,9 @@
 extends PanelContainer
 
 const LOCAL_PORT = 5999
-const HANDSHAKE_IP = "35.189.13.116"
+const HANDSHAKE_IP = '192.168.1.54'
 const HANDSHAKE_PORT = 5189
-const IS_HANDSHAKE_SERVER = false #set true for server exports
+const IS_HANDSHAKE_SERVER = true #set true for server exports
 
 enum MESSAGE_TYPE {GAME_START, MOVE}
 
@@ -28,7 +28,6 @@ const LAST_INDEX_TO_WIN_LINES = [
 onready var _board = find_node("Board")
 onready var _players_waiting_label = find_node("PlayersWaitingLabel")
 onready var _status_label = find_node("StatusLabel")
-onready var _local_ip_options = find_node('LocalIPOptions')
 onready var _connect_button = find_node("ConnectButton")
 onready var _disconnect_button = find_node("DisconnectButton")
 
@@ -60,26 +59,11 @@ func _ready():
 	Network.connect('message_received', self, '_message_received')
 	Network.connect('session_terminated', self, '_session_terminated')
 	
-	var local_ips_temp = IP.get_local_addresses()
-	var local_ips = []
-	for local_ip in local_ips_temp:
-		if local_ip.find(':') == -1 and not local_ip.begins_with('127.0.'):
-			local_ips.push_front(local_ip)
-	if not local_ips.empty():
-		for local_ip in local_ips:
-			_local_ip_options.add_item(local_ip)
-		_local_ip_options.select(0)
-	if local_ips.size() == 1:
-		_local_ip_options.modulate.a = 0
-	
 
 func _connect_pressed():
 	_connect_button.disabled = true
 	_connect_button.text = '. . .'
-	var local_ip = _local_ip_options.get_item_text(_local_ip_options.get_selected_id())
-	Network.set_network_details({
-		Network.DETAILS_KEY_LOCAL_IP: local_ip
-	})
+	
 	Network.auto_connect()
 	
 func _disconnect_pressed():

@@ -153,21 +153,33 @@ func _udp_packet_received(data, sender_address, packet_id):
 
 
 
-func _make_host_registration_data(host_name, local_address, extra_info):
-	var data =  {'host-registration': [host_name,  local_address, extra_info]}
+func _make_host_registration_data(host_name, local_ips, local_port, extra_info):
+	var data =  {'host-registration': [host_name,  local_ips, local_port, extra_info]}
 	return data
 func _verify_host_registration_data_format(data):
-	return (
+	var valid = (
 		data.has('host-registration') and typeof(data['host-registration']) == TYPE_ARRAY
-		and data['host-registration'].size() == 3
+		and data['host-registration'].size() == 4
 		and typeof(data['host-registration'][0]) == TYPE_STRING
-		and Network.test_address_valid_data_format(data['host-registration'][1])
-		and typeof(data['host-registration'][2]) == TYPE_DICTIONARY
+		and typeof(data['host-registration'][1]) == TYPE_ARRAY
+		and typeof(data['host-registration'][3]) == TYPE_DICTIONARY
 	)
+	if valid:
+		for ip in data['host-registration'][1]:
+			if not Network.test_ip_valid_data_format(ip):
+				valid = false
+				break
+	if valid:
+		if not Network.test_port_valid_data_format(data['host-registration'][2]):
+			valid = false
+	return valid
+	
+	
 func _attempt_register_host(details, host_id, global_address, packet_id):
 	var host_name = details[0]
-	var local_address = details[1]
-	var extra_info = details[2]
+	var local_ips = details[1]
+	var local_port = details[2]
+	var extra_info = details[3]
 	var err = OK
 	
 	var host_names_to_remove = []
@@ -194,7 +206,8 @@ func _attempt_register_host(details, host_id, global_address, packet_id):
 			'unique-id': host_id,
 			'host-name': host_name,
 			'global-address': global_address,
-			'local-address': local_address,
+			'local-ips': local_ips,
+			'local-port': local_port,
 			'extra-info': extra_info,
 			'last-update-id': 0,
 			'timeout': Network.get_network_detail(Network.DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY)
@@ -216,21 +229,32 @@ func _attempt_register_host(details, host_id, global_address, packet_id):
 
 
 
-func _make_client_join_request_data(client_name, host_name, local_address):
-	return {'join-request': [client_name, host_name, local_address]}
+func _make_client_join_request_data(client_name, host_name, local_ips, local_port):
+	return {'join-request': [client_name, host_name, local_ips, local_port]}
 
 func _verify_client_join_request_data_format(data):
-	return (
-		data.has('join-request') and typeof(data['join-request']) == TYPE_ARRAY
-		and data['join-request'].size() == 3
+	var valid = (
+		data.has('join-request') and typeof(data['host-registration']) == TYPE_ARRAY
+		and data['join-request'].size() == 4
 		and typeof(data['join-request'][0]) == TYPE_STRING
 		and typeof(data['join-request'][1]) == TYPE_STRING
-		and Network.test_address_valid_data_format(data['join-request'][2])
+		and typeof(data['join-request'][2]) == TYPE_ARRAY
 	)
+	if valid:
+		for ip in data['join-request'][2]:
+			if not Network.test_ip_valid_data_format(ip):
+				valid = false
+				break
+	if valid:
+		if not Network.test_port_valid_data_format(data['join-request'][3]):
+			valid = false
+	return valid
+
 func _attempt_send_handshake_packets(details, client_global_address, client_packet_id):
 	var client_name = details[0]
 	var host_name = details[1]
-	var client_local_address = details[2]
+	var client_local_ips = details[2]
+	var client_local_port = details[3]
 	
 	if not _host_name_to_registration.has(host_name):
 		var msg = 'Host unavailable.'
@@ -238,14 +262,16 @@ func _attempt_send_handshake_packets(details, client_global_address, client_pack
 		return
 	
 	var host_details = _host_name_to_registration[host_name]
-	var host_local_address = host_details['local-address']
+	var host_local_ips = host_details['local-ips']
+	var host_local_port = host_details['local-port']
 	var host_global_address = host_details['global-address']
 	var host_extra_info = host_details['extra-info']
 	
 	var data_for_host = {
 		'join-requested': client_name,
-		'global-address': client_local_address,
-		'local-address': client_global_address,
+		'global-address': client_global_address,
+		'local-ips': client_local_ips,
+		'local-port': client_local_port,
 	}
 	#global-address is the one we received their registration on
 	var func_key = _udp_socket.send_data_wait_for_reply(data_for_host, host_global_address)
@@ -262,7 +288,8 @@ func _attempt_send_handshake_packets(details, client_global_address, client_pack
 	else:
 		var data_for_client = {
 			'global-address': host_global_address,
-			'local-address': host_local_address,
+			'local-ips': host_local_ips,
+			'local-port': host_local_port,
 			'extra-info': host_extra_info,
 			'handshake-info-for-client': host_name
 		}
@@ -274,23 +301,34 @@ func _attempt_send_handshake_packets(details, client_global_address, client_pack
 
 
 
-func _make_auto_connect_data(player_name, local_address, extra_host_info, extra_client_info):
-	return {'auto-connect-request': [player_name, local_address, extra_host_info, extra_client_info]}
+func _make_auto_connect_data(player_name, local_ips, local_port, extra_host_info, extra_client_info):
+	return {'auto-connect-request': [player_name, local_ips, local_port, extra_host_info, extra_client_info]}
 
 func _verify_auto_connect_data_format(data):
-	return (
+	var valid = (
 		data.has('auto-connect-request') and typeof(data['auto-connect-request']) == TYPE_ARRAY
-		and data['auto-connect-request'].size() == 4
+		and data['auto-connect-request'].size() == 5
 		and typeof(data['auto-connect-request'][0]) == TYPE_STRING
-		and Network.test_address_valid_data_format(data['auto-connect-request'][1])
-		and typeof(data['auto-connect-request'][2]) == TYPE_DICTIONARY
+		and typeof(data['auto-connect-request'][1]) == TYPE_ARRAY
 		and typeof(data['auto-connect-request'][3]) == TYPE_DICTIONARY
+		and typeof(data['auto-connect-request'][4]) == TYPE_DICTIONARY
 	)
+	if valid:
+		for ip in data['auto-connect-request'][1]:
+			if not Network.test_ip_valid_data_format(ip):
+				valid = false
+				break
+	if valid:
+		if not Network.test_port_valid_data_format(data['auto-connect-request'][2]):
+			valid = false
+	return valid
+
 func _attempt_auto_connect(details, global_address, unique_id, packet_id):
 	var player_name = details[0]
-	var local_address = details[1]
-	var extra_host_info = details[2]
-	var extra_client_info = details[3]
+	var local_ips = details[1]
+	var local_port = details[2]
+	var extra_host_info = details[3]
+	var extra_client_info = details[4]
 	var registrations = _host_name_to_registration.values().duplicate()
 	var reg_to_rank = _rank_quick_sort(registrations, extra_client_info)
 	var best_registration = null
@@ -303,14 +341,14 @@ func _attempt_auto_connect(details, global_address, unique_id, packet_id):
 				break
 	if best_registration != null:
 		var handshake_details = _make_client_join_request_data(
-			player_name, best_registration['host-name'], local_address
+			player_name, best_registration['host-name'], local_ips, local_port
 		)['join-request']
 		_attempt_send_handshake_packets(
 			handshake_details, global_address, packet_id
 		)
 	else:
 		var reg_details = _make_host_registration_data(
-			player_name, local_address, extra_host_info
+			player_name, local_ips, local_port, extra_host_info
 		)['host-registration']
 		_attempt_register_host(details, unique_id, global_address, packet_id)
 

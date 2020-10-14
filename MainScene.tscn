@@ -4,17 +4,17 @@
 [ext_resource path="res://fonts/h4/h4.tres" type="DynamicFont" id=2]
 [ext_resource path="res://fonts/h3/h3.tres" type="DynamicFont" id=3]
 
-[sub_resource type="Theme" id=2]
+[sub_resource type="Theme" id=1]
 default_font = ExtResource( 2 )
 
-[sub_resource type="StyleBoxFlat" id=1]
+[sub_resource type="StyleBoxFlat" id=2]
 bg_color = Color( 0, 0, 0, 1 )
 
 [node name="MainScene" type="PanelContainer"]
 anchor_right = 1.0
 anchor_bottom = 1.0
-theme = SubResource( 2 )
-custom_styles/panel = SubResource( 1 )
+theme = SubResource( 1 )
+custom_styles/panel = SubResource( 2 )
 script = ExtResource( 1 )
 __meta__ = {
 "_edit_use_anchors_": false
@@ -37,12 +37,12 @@ custom_constants/separation = 10
 
 [node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
 margin_right = 1004.0
-margin_bottom = 50.0
+margin_bottom = 29.0
 size_flags_horizontal = 3
 
 [node name="PlayersWaitingLabel" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer"]
 margin_right = 260.0
-margin_bottom = 50.0
+margin_bottom = 29.0
 rect_min_size = Vector2( 260, 0 )
 size_flags_vertical = 3
 text = "Players waiting: 0"
@@ -51,30 +51,27 @@ valign = 1
 
 [node name="StatusLabel" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer"]
 margin_left = 264.0
-margin_top = 10.0
 margin_right = 740.0
-margin_bottom = 39.0
+margin_bottom = 29.0
 size_flags_horizontal = 3
 custom_fonts/font = ExtResource( 3 )
 text = "Ready to Connect"
 align = 1
 valign = 1
 
-[node name="LocalIPOptions" type="OptionButton" parent="MarginContainer/VBoxContainer/HBoxContainer"]
+[node name="Spacer" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer"]
 margin_left = 744.0
 margin_right = 1004.0
-margin_bottom = 50.0
-rect_min_size = Vector2( 260, 50 )
-size_flags_horizontal = 8
-size_flags_vertical = 0
-__meta__ = {
-"_edit_use_anchors_": false
-}
+margin_bottom = 29.0
+rect_min_size = Vector2( 260, 0 )
+size_flags_vertical = 3
+align = 1
+valign = 1
 
 [node name="MarginContainer" type="MarginContainer" parent="MarginContainer/VBoxContainer"]
-margin_top = 60.0
+margin_top = 39.0
 margin_right = 1004.0
-margin_bottom = 100.0
+margin_bottom = 79.0
 custom_constants/margin_top = -10
 __meta__ = {
 "_edit_use_anchors_": false
@@ -103,9 +100,9 @@ text = "Disconnect"
 
 [node name="Board" type="TextureRect" parent="MarginContainer/VBoxContainer"]
 margin_left = 267.0
-margin_top = 110.0
+margin_top = 89.0
 margin_right = 737.0
-margin_bottom = 580.0
+margin_bottom = 559.0
 rect_min_size = Vector2( 470, 470 )
 size_flags_horizontal = 6
 expand = true
