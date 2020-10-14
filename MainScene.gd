@@ -12,6 +12,7 @@ const TOKEN_TO_TEXTURE = {
 	'crosses': preload("res://cross.png")
 }
 
+#taken from https://stackoverflow.com/a/24376236
 const LAST_INDEX_TO_WIN_LINES = [
 	[[1, 2], [4, 8], [3, 6]],
 	[[0, 2], [4, 7]],
