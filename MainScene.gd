@@ -1,6 +1,6 @@
 extends PanelContainer
 
-const LOCAL_PORTS = [5999, 6000]
+const LOCAL_PORTS = [5999, 6000, 60001, 60002]
 const HANDSHAKE_IP = '192.168.1.54'
 const HANDSHAKE_PORT = 5189
 const IS_HANDSHAKE_SERVER = false #set true for server exports
@@ -43,13 +43,6 @@ func _ready():
 	_disconnect_button.connect("pressed", self, "_disconnect_pressed")
 	randomize()
 	
-	Network.set_network_details({
-		Network.DETAILS_KEY_LOCAL_PORTS: LOCAL_PORTS,
-		Network.DETAILS_KEY_HANDSHAKE_IP: HANDSHAKE_IP,
-		Network.DETAILS_KEY_HANDSHAKE_PORT: HANDSHAKE_PORT,
-	})
-	if IS_HANDSHAKE_SERVER:
-		Handshake.init()
 	Network.connect("auto_connect_failed", self, '_auto_connect_failed')
 	Network.connect('registered_as_host', self, '_registered_as_host')
 	Network.connect('register_host_failed', self, '_register_host_failed')
@@ -59,7 +52,16 @@ func _ready():
 	Network.connect('player_dropped', self, '_player_dropped')
 	Network.connect('message_received', self, '_message_received')
 	Network.connect('session_terminated', self, '_session_terminated')
+	Network.connect('debug', self, '_debug')
 	
+	Network.set_network_details({
+		Network.DETAILS_KEY_LOCAL_PORTS: LOCAL_PORTS, #[5999, 6000, 60001, 60002]
+		Network.DETAILS_KEY_HANDSHAKE_IP: HANDSHAKE_IP,
+		Network.DETAILS_KEY_HANDSHAKE_PORT: HANDSHAKE_PORT,
+	})
+	if IS_HANDSHAKE_SERVER:
+		Handshake.init()
+
 
 func _connect_pressed():
 	_connect_button.disabled = true
@@ -69,6 +71,9 @@ func _connect_pressed():
 func _disconnect_pressed():
 	_disconnect_button.disabled = true
 	Network.reset()
+
+func _debug(message):
+	find_node('DebugLabel').text += message + '\n'
 
 func _update_active_player(next_player):
 	_is_my_turn = Network.get_player_name() == next_player
@@ -85,7 +90,7 @@ func _game_over(winning_token):
 	yield(get_tree().create_timer(1.2), 'timeout')
 	if not is_inside_tree():
 		return
-	if Network.is_networking() and Network.get_session_id() == session_id:
+	if Network.get_session_id() == session_id:
 		Network.reset()
 
 
@@ -100,7 +105,8 @@ func _registered_as_host(host_name, handshake_address):
 	_status_label.text = 'Waiting for player 2...'
 	_disconnect_button.visible = true
 	_connect_button.visible = false
-	_update_server_status_countdown = 0.1
+	if _update_server_status_countdown != null:
+		_update_server_status_countdown = 0.1
 	_client_points = []
 
 func _register_host_failed(reason):
@@ -110,7 +116,8 @@ func _joined_to_host(host_name, address):
 	_status_label.text = 'Connected!'
 	_disconnect_button.visible = true
 	_connect_button.visible = false
-	_update_server_status_countdown = 0.1
+	if _update_server_status_countdown != null:
+		_update_server_status_countdown = 0.1
 
 func _join_host_failed(reason):
 	print('Failed to join host: %s' % reason)
@@ -119,7 +126,8 @@ func _client_joined(player_name, player_address, extra_info):
 	var first_player = player_name if randf() < 0.5 else Network.get_player_name()
 	Network.send_message({'type': MESSAGE_TYPE.GAME_START, 'next-player':first_player})
 	Network.drop_handshake()
-	_update_server_status_countdown = 0.1
+	if _update_server_status_countdown != null:
+		_update_server_status_countdown = 0.1
 
 func _player_dropped(player_name):
 	print('Player dropped: %s' % player_name)
@@ -163,22 +171,22 @@ func _message_received(from_player_name, to_players, message):
 				_game_over(null)
 				return
 			_update_active_player(message['next-player'])
-			
-		MESSAGE_TYPE.MOUSE_PRESSED_DOWN:
-			_client_points.push_back(message['pos'])
-			update()
+#			
+#		MESSAGE_TYPE.MOUSE_PRESSED_DOWN:
+#			_client_points.push_back(message['pos'])
+#			update()
 
 ###################################
 ###################################
 
 
 func _process(delta):
-	if Network.is_player_client():
-		if Input.is_action_pressed("left_mouse"):
-			Network.send_unreliable_message_to_host({
-				'type': MESSAGE_TYPE.MOUSE_PRESSED_DOWN,
-				'pos': get_global_mouse_position()
-			})
+#	if Network.is_player_client():
+#		if Input.is_action_pressed("left_mouse"):
+#			Network.send_unreliable_message_to_host({
+#				'type': MESSAGE_TYPE.MOUSE_PRESSED_DOWN,
+#				'pos': get_global_mouse_position()
+#			})
 	if _update_server_status_countdown != null:
 		_update_server_status_countdown -= delta
 		if _update_server_status_countdown < 0:

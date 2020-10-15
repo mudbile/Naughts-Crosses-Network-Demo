@@ -1,5 +1,7 @@
 extends Node
 
+signal debug(message)
+
 """
 Hosts just keeps trying to ping handshake server- you can drop it at any time
 Handshake server drops host after waiting too long for contact.
@@ -160,7 +162,6 @@ var _network_details = {
 	DETAILS_KEY_HANDSHAKE_IP: '127.0.0.1',
 	DETAILS_KEY_LOCAL_IPS: 'auto', #if 'auto', will attempt them all
 	DETAILS_KEY_LOCAL_PORTS: [5141],#as good a default as any, I suppose!
-	DETAILS_KEY_UDP_TIMEOUT_SECS: 10,
 	DETAILS_KEY_PING_INTERVAL_SECS: 8,
 	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY: 20
 }
@@ -212,6 +213,8 @@ func is_player_client_or_host():
 func get_player_name():
 	return _my_player_name
 
+func get_active_port():
+	return _udp_socket.get_port()
 
 func stop_accepting_new_client():
 	_is_accepting_new_clients = false
@@ -224,8 +227,11 @@ func stop_accepting_new_client():
 func _ready():
 	_udp_socket = CUSTOM_UDP_WRAPPER_SCRIPT.new()
 	add_child(_udp_socket)
+	_udp_socket.set_minimisation_map(_UDP_SOCKET_MINIMISATION_KEYS)
 	_udp_socket.connect('packet_received', self, '_udp_packet_received')
 
+func set_packet_timeout_secs(packet_timeout):
+	_udp_socket.set_packet_timeout_secs(packet_timeout)
 
 func get_session_id():
 	return _net_id
@@ -289,7 +295,6 @@ func register_as_host(player_name, extra_info=null):
 	reset()
 	var last_known_net_id = _net_id
 	
-	_player_names_no_handshake = [player_name]
 	
 	var local_ips = get_local_ips()
 	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
@@ -298,11 +303,7 @@ func register_as_host(player_name, extra_info=null):
 	if player_name == HANDSHAKE_SERVER_PLAYER_NAME:
 		emit_signal('register_host_failed', 'Invalid player name.')
 	
-	
-	_udp_socket.init(
-		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-	)
+	_udp_socket.set_data_to_add_to_every_packet({'_idx': _idx})
 	var ok = false
 	for port in local_ports:
 		if _udp_socket.start_listening(port) == OK:
@@ -326,6 +327,7 @@ func register_as_host(player_name, extra_info=null):
 			Handshake.init()
 	
 	self._is_networking = true
+	self._player_names_no_handshake = [player_name]
 	self._my_player_name = player_name
 	self._host_player_name = player_name
 	
@@ -370,7 +372,6 @@ func register_as_host(player_name, extra_info=null):
 func join_host(player_name, host_player_name, extra_info_for_host=null):
 	reset()
 	var last_known_net_id = _net_id
-	_player_names_no_handshake = [player_name]
 	
 	var local_ips = get_local_ips()
 	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
@@ -380,10 +381,7 @@ func join_host(player_name, host_player_name, extra_info_for_host=null):
 		emit_signal('join_host_failed', 'Invalid player name.')
 		return
 	
-	_udp_socket.init(
-		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-	)
+	_udp_socket.set_data_to_add_to_every_packet({'_idx': _idx})
 	var ok = false
 	for port in local_ports:
 		if _udp_socket.start_listening(port) == OK:
@@ -398,6 +396,7 @@ func join_host(player_name, host_player_name, extra_info_for_host=null):
 		return
 	 
 	self._is_networking = true
+	self._player_names_no_handshake = [player_name]
 	self._my_player_name = player_name
 	self._host_player_name = host_player_name
 	
@@ -455,8 +454,7 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 		for i in 25:
 			player_name += CHARS[randi() % CHARS.length()]
 	var last_known_net_id = _net_id
-	_is_networking = true
-	_player_names_no_handshake = [player_name]
+	
 	
 	var local_ips = get_local_ips()
 	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
@@ -465,10 +463,7 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 	if player_name == HANDSHAKE_SERVER_PLAYER_NAME:
 		emit_signal('auto_connect_failed', 'Invalid player name.')
 	
-	_udp_socket.init(
-		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-	)
+	_udp_socket.set_data_to_add_to_every_packet({'_idx': _idx})
 	var ok = false
 	for port in local_ports:
 		if _udp_socket.start_listening(port) == OK:
@@ -481,6 +476,9 @@ func auto_connect(player_name=null, extra_host_info={}, extra_client_info={}):
 		if last_known_net_id == _net_id:
 			reset()
 		return
+	
+	_is_networking = true
+	_player_names_no_handshake = [player_name]
 	
 	var init_handshake = false
 	if handshake_address[0] == ""  or handshake_address[0] == '127.0.0.1':
@@ -642,7 +640,7 @@ func kick_player(player_name):
 	if not _player_is_host:
 		print('Error: only host can kick player')
 		return
-	if not _player_names_no_handshake.has(player_name):
+	if not _player_name_to_connection.has(player_name):
 		print('Error: player does not exist to kick: %s' % player_name)
 		return
 	var connection = _player_name_to_connection[player_name]
@@ -683,10 +681,6 @@ func get_host_infos_from_handshake(handshake_address, extra_info={}):
 
 func _get_host_infos_from_handshake(f_key, handshake_address, extra_info):
 	var last_known_net_id = _net_id
-	_udp_socket.init(
-		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-	)
 	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
 	var ok = false
 	for port in local_ports:
@@ -722,10 +716,6 @@ func get_misc_from_handshake(handshake_address, extra_info={}):
 
 func _get_misc_from_handshake(f_key, handshake_address, extra_info):
 	var last_known_net_id = _net_id
-	_udp_socket.init(
-		get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS),
-		{'_idx': _idx}, _UDP_SOCKET_MINIMISATION_KEYS
-	)
 	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
 	var ok = false
 	for port in local_ports:
@@ -1027,7 +1017,7 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 		
 		var func_keys = []
 		for player_name in players_to_send_to:
-			if player_name == _my_player_name or not _player_names_no_handshake.has(player_name):
+			if player_name == _my_player_name or not _player_name_to_connection.has(player_name):
 				continue
 			var func_key = _send_to_connected_faulty_if_no_reply(data, player_name)
 			func_keys.push_back(func_key)
@@ -1054,19 +1044,6 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 		else:
 			var func_key = _send_to_connected_faulty_if_no_reply(d, data['from'])
 			fapi.abandon_awaiting_func_completion(func_key)
-			
-	elif data.has('forward-unreliable-message'):
-		data['message'] = data['forward-unreliable-message']
-		data.erase('forward-unreliable-message')
-		var players_to_send_to = data['to']
-		var me_included = players_to_send_to.has(_my_player_name)
-		for to_name in data['to']:
-			if to_name == _my_player_name or not _player_names_no_handshake.has(to_name):
-				continue
-			var address = _player_name_to_connection[to_name]['player-address']
-			_udp_socket.send_data(data, address)
-		if me_included:
-			_packet_from_connected(data, null, null, null)
 	
 	elif data.has('message'):
 		
@@ -1078,7 +1055,7 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 		#received init-players, but we haven't received add-player
 		#for them yet
 		if not _player_is_host:
-			if not _player_name_to_connection.has(from):
+			if not (from == _my_player_name or _player_name_to_connection.has(from)):
 				var process_later_data = {
 					'data': data, 'packet-id': packet_id, 'sender-address': sender_address
 				}
@@ -1093,7 +1070,28 @@ func _packet_from_connected(data, packet_id, sender_address, connection):
 		_udp_socket.send_data({}, sender_address, packet_id)
 		_sent_message_ids_not_received_by_all.erase(data['message-received-by-all'])
 		emit_signal('_sent_message_received_by_all')
-		
+	
+	
+	elif data.has('forward-unreliable-message'):
+		data['unreliable-message'] = data['forward-unreliable-message']
+		data.erase('forward-unreliable-message')
+		var players_to_send_to = data['to']
+		var me_included = players_to_send_to.has(_my_player_name)
+		for to_name in data['to']:
+			if to_name == _my_player_name or not _player_name_to_connection.has(to_name):
+				continue
+			var address = _player_name_to_connection[to_name]['player-address']
+			_udp_socket.send_data(data, address)
+		if me_included:
+			_packet_from_connected(data, null, null, null)
+	
+	elif data.has('unreliable-message'):
+		var from = data['from']
+		#if this message is from someone we don't know (yet or anymore),
+		#just forget about it
+		if from == _my_player_name or _player_name_to_connection.has(from):
+			emit_signal('message_received', from, data['to'], data['unreliable-message'])
+	
 
 #func key returned will be over when all players got message
 #yield for "sent_message_received_by_all"
