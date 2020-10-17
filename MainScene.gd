@@ -1,9 +1,10 @@
 extends PanelContainer
 
 const LOCAL_PORTS = [5999, 6000, 60001, 60002]
-const HANDSHAKE_IP = '192.168.1.54'
+const DEFAULT_HANDSHAKE_IP = '192.168.1.143'
 const HANDSHAKE_PORT = 5189
 const IS_HANDSHAKE_SERVER = false #set true for server exports
+const GAME_CODE = 'NaughtsCrossesDemo'
 
 enum MESSAGE_TYPE {GAME_START, MOVE, MOUSE_PRESSED_DOWN}
 
@@ -36,7 +37,8 @@ var _num_moves_made
 var _player_token
 var _is_my_turn
 var _client_points = []
-var _update_server_status_countdown = 0.5 if not IS_HANDSHAKE_SERVER else null
+var _update_server_status_countdown = null
+var _current_handshake_ip = DEFAULT_HANDSHAKE_IP
 
 func _ready():
 	_connect_button.connect("pressed", self, "_connect_pressed")
@@ -53,19 +55,54 @@ func _ready():
 	Network.connect('message_received', self, '_message_received')
 	Network.connect('session_terminated', self, '_session_terminated')
 	Network.connect('debug', self, '_debug')
-	
 	Network.set_network_details({
 		Network.DETAILS_KEY_LOCAL_PORTS: LOCAL_PORTS, #[5999, 6000, 60001, 60002]
-		Network.DETAILS_KEY_HANDSHAKE_IP: HANDSHAKE_IP,
+		Network.DETAILS_KEY_HANDSHAKE_IP: DEFAULT_HANDSHAKE_IP,
 		Network.DETAILS_KEY_HANDSHAKE_PORT: HANDSHAKE_PORT,
 	})
 	if IS_HANDSHAKE_SERVER:
 		Handshake.init()
+	Handshake.set_node_and_func_for_am_i_handshake_request(self, '_handle_am_i_handshake_request')
 
+
+func _handle_am_i_handshake_request(client_info):
+	if client_info.has('game-code') and client_info['game-code'] == GAME_CODE:
+		return client_info
 
 func _connect_pressed():
 	_connect_button.disabled = true
 	_connect_button.text = '. . .'
+	_current_handshake_ip = DEFAULT_HANDSHAKE_IP
+	_current_handshake_ip = '127.0.0.1'
+	_debug("Checking default handshake server %s..." % DEFAULT_HANDSHAKE_IP)
+	var func_key = Network.check_handshake(
+		[DEFAULT_HANDSHAKE_IP, HANDSHAKE_PORT], {'game-code': GAME_CODE}
+	)
+	while Network.fapi.is_func_ongoing(func_key):
+		yield(Network, 'check_handshake_completed')
+	var info_default_handshake = Network.fapi.get_info_for_completed_func(func_key)
+	if info_default_handshake != null and not info_default_handshake['timed-out']:
+		_debug("Default handshake ok!")
+		_current_handshake_ip = DEFAULT_HANDSHAKE_IP
+	else:
+		_debug("Default handshake offline. Broadcasting for LAN handshake...")
+		func_key = Network.broadcast_lan_find_handshakes({'game-code': GAME_CODE})
+		while Network.fapi.is_func_ongoing(func_key):
+			yield(Network, 'broadcast_lan_find_handshakes_completed')
+		var infos = Network.fapi.get_info_for_completed_func(func_key)
+		if infos != null:
+			for info in infos:
+				var data = info['reply-data']
+				if data.has('game-code') and data['game-code'] == GAME_CODE:
+					_debug("LAN handshake found: %s" % info['address'][0])
+					_current_handshake_ip = info['address'][0]
+					break
+	if _current_handshake_ip == '127.0.0.1':
+		_debug('No handshakes found. I will become one.')
+	Network.set_network_details({
+		Network.DETAILS_KEY_HANDSHAKE_IP: _current_handshake_ip,
+	})
+	
 	Network.auto_connect()
 	
 func _disconnect_pressed():
@@ -113,7 +150,6 @@ func _register_host_failed(reason):
 	print('Failed to register host: %s' % reason)
 
 func _joined_to_host(host_name, address):
-	_status_label.text = 'Connected!'
 	_disconnect_button.visible = true
 	_connect_button.visible = false
 	if _update_server_status_countdown != null:
@@ -145,6 +181,7 @@ func _session_terminated():
 	_player_token = null
 	_is_my_turn = null
 	_client_points.clear()
+	_debug("")
 	update()
 
 func _message_received(from_player_name, to_players, message):
@@ -213,7 +250,7 @@ func _process(delta):
 
 func _update_server_status():
 	_update_server_status_countdown = null
-	var func_key = Network.get_host_infos_from_handshake([HANDSHAKE_IP, HANDSHAKE_PORT])
+	var func_key = Network.get_host_infos_from_handshake([_current_handshake_ip, HANDSHAKE_PORT])
 	while Network.fapi.is_func_ongoing(func_key):
 		yield(Network, 'host_infos_request_completed')
 	var result = Network.fapi.get_info_for_completed_func(func_key)

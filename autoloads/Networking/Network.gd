@@ -24,7 +24,8 @@ todo:
 signal session_terminated()
 signal host_infos_request_completed(info_or_null_on_error)
 signal misc_request_completed(info_or_null_on_error)
-
+signal broadcast_lan_find_handshakes_completed(info_or_null_on_error)
+signal check_handshake_completed(info_or_null_on_error)
 
 #this is emitted when a connection becomes deemed faulty
 #call decision_to_keep_trying_faulties_made and pass
@@ -153,9 +154,8 @@ enum {
 	DETAILS_KEY_HANDSHAKE_IP,
 	DETAILS_KEY_LOCAL_IPS,#note: use get_local_ips instead of get_network_detail
 	DETAILS_KEY_LOCAL_PORTS,
-	DETAILS_KEY_UDP_TIMEOUT_SECS,
 	DETAILS_KEY_PING_INTERVAL_SECS,
-	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY
+	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY,
 }
 var _network_details = {
 	DETAILS_KEY_HANDSHAKE_PORT: 5111,
@@ -163,7 +163,7 @@ var _network_details = {
 	DETAILS_KEY_LOCAL_IPS: 'auto', #if 'auto', will attempt them all
 	DETAILS_KEY_LOCAL_PORTS: [5141],#as good a default as any, I suppose!
 	DETAILS_KEY_PING_INTERVAL_SECS: 8,
-	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY: 20
+	DETAILS_KEY_MAX_SECS_WITHOUT_CONTACT_FROM_HOST_BEFORE_FAULTY: 20,
 }
 #pass a dict with DETAILS_KEY_... entries
 func set_network_details(info):
@@ -244,7 +244,6 @@ func reset():
 		#false no emit signals, yes send dropme, yes coming from reset
 		_drop_connection(connection, false, true, true)
 	_udp_socket.stop_listening()
-	_udp_socket.clear()
 	
 	_net_id += 1
 	_idx = "%s|%s" % [_unique_id, _net_id]
@@ -631,6 +630,85 @@ host_local_ips, host_local_port, host_global_address, extra_info):
 			_packet_from_connected(p_data, p_id, p_sender_address, p_conn)
 
 
+func check_handshake(handshake_address, extra_info, num_attempts=2, attempt_timeout=0.6):
+	var key = fapi.get_add_key()
+	_check_handshake(
+		key, handshake_address, extra_info, num_attempts, attempt_timeout
+	)
+	return key
+func _check_handshake(f_key, handshake_address, extra_info, num_attempts, attempt_timeout):
+	var last_known_net_id = _net_id
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
+		emit_signal('check_handshake_completed', null)
+		return
+	_udp_socket.set_data_to_add_to_every_packet({'_idx': _idx})
+	var func_key = _udp_socket.send_data_wait_for_reply( 
+		{'are-you-handshake': extra_info}, handshake_address, null, 
+		attempt_timeout, 0, attempt_timeout*num_attempts
+	)
+	
+	while _udp_socket.fapi.is_func_ongoing(func_key):
+		yield(_udp_socket, 'send_data_await_reply_completed')
+	_udp_socket.stop_listening()
+	var func_result = _udp_socket.fapi.get_info_for_completed_func(func_key)
+	fapi.set_info_for_completed_func(f_key, func_result)
+	emit_signal('check_handshake_completed', func_result)
+	
+	
+
+
+#func result is null on error or array of replies which are each dictionaries of
+#		'reply-id': ...
+#		'replay-data': ...
+#		'address': ...
+#user should test reply data to see whether handshake is really appropriate
+func broadcast_lan_find_handshakes(extra_info, num_attempts=1, attempt_timeout=0.4, 
+reattempt_even_if_a_reply_has_come=false):
+	var key = fapi.get_add_key()
+	_broadcast_lan_find_handshakes(
+		key, extra_info, num_attempts, 
+		attempt_timeout, reattempt_even_if_a_reply_has_come
+	)
+	return key
+
+func _broadcast_lan_find_handshakes(f_key, extra_info, num_attempts, attempt_timeout, 
+reattempt_even_if_a_reply_has_come):
+	var last_known_net_id = _net_id
+	var local_ports = get_network_detail(DETAILS_KEY_LOCAL_PORTS)
+	var ok = false
+	for port in local_ports:
+		if _udp_socket.start_listening(port) == OK:
+			ok = true
+			break
+	if not ok:
+		emit_signal('broadcast_lan_find_handshakes_completed', null)
+		return
+		
+	_udp_socket.set_data_to_add_to_every_packet({'_idx': _idx})
+	_udp_socket.enable_broadcast()
+	var handshake_port = get_handshake_address()[1]
+	var func_key = _udp_socket.broadcast_data_accumulate_replies(
+		{'are-you-handshake': extra_info}, handshake_port, num_attempts, attempt_timeout, 
+		reattempt_even_if_a_reply_has_come
+	)
+	while _udp_socket.fapi.is_func_ongoing(func_key):
+		yield(_udp_socket, 'broadcast_data_accumulate_replies_completed')
+	_udp_socket.disable_broadcast()
+	_udp_socket.stop_listening()
+	var func_result = _udp_socket.fapi.get_info_for_completed_func(func_key)
+	var replies
+	if func_result == null:
+		replies = []
+	else:
+		replies =  func_result['replies']
+	fapi.set_info_for_completed_func(f_key, replies)
+	emit_signal('broadcast_lan_find_handshakes_completed', replies)
 
 
 
@@ -697,8 +775,6 @@ func _get_host_infos_from_handshake(f_key, handshake_address, extra_info):
 	while _udp_socket.fapi.is_func_ongoing(func_key):
 		yield(_udp_socket, 'send_data_await_reply_completed')
 	_udp_socket.stop_listening()
-	if last_known_net_id != _net_id:
-		fapi.abandon_awaiting_func_completion(f_key)
 	var func_result = _udp_socket.fapi.get_info_for_completed_func(func_key)
 	fapi.set_info_for_completed_func(f_key, func_result)
 	emit_signal('host_infos_request_completed', func_result)
@@ -732,8 +808,6 @@ func _get_misc_from_handshake(f_key, handshake_address, extra_info):
 	while _udp_socket.fapi.is_func_ongoing(func_key):
 		yield(_udp_socket, 'send_data_await_reply_completed')
 	_udp_socket.stop_listening()
-	if last_known_net_id != _net_id:
-		fapi.abandon_awaiting_func_completion(f_key)
 	var func_result = _udp_socket.fapi.get_info_for_completed_func(func_key)
 	fapi.set_info_for_completed_func(f_key, func_result)
 	emit_signal('misc_request_completed', func_result)
@@ -1194,7 +1268,7 @@ func decision_to_keep_trying_faulties_made(decision):
 		for connection in _faulty_connections:
 			connection['emitted-faulty'] = false
 			if not connection['send-pings']:
-				connection['no-contact-timer'] = get_network_detail(DETAILS_KEY_UDP_TIMEOUT_SECS)
+				connection['no-contact-timer'] = _udp_socket.get_packet_timeout_secs()
 				_udp_socket.send_data(
 					{'ping-request': null},
 					connection['player-address']
@@ -1308,7 +1382,9 @@ func _drop_connection(connection, no_signals=false, send_dropme=true, coming_fro
 	connection['removed'] = true
 	
 	if connection['is-handshake']:
-		if send_dropme:
+		if Handshake.is_running():
+			Handshake.reset()
+		elif send_dropme:
 			_udp_socket.send_data(
 				{'drop-me': _my_player_name}, connection['player-address']
 			)

@@ -1,8 +1,9 @@
-[gd_scene load_steps=6 format=2]
+[gd_scene load_steps=7 format=2]
 
 [ext_resource path="res://MainScene.gd" type="Script" id=1]
 [ext_resource path="res://fonts/h4/h4.tres" type="DynamicFont" id=2]
 [ext_resource path="res://fonts/h3/h3.tres" type="DynamicFont" id=3]
+[ext_resource path="res://fonts/h5/h5.tres" type="DynamicFont" id=4]
 
 [sub_resource type="Theme" id=1]
 default_font = ExtResource( 2 )
@@ -29,15 +30,18 @@ custom_constants/margin_left = 10
 custom_constants/margin_bottom = 10
 
 [node name="DebugLabel" type="Label" parent="MarginContainer"]
-margin_left = 10.0
+margin_left = 754.0
 margin_top = 10.0
 margin_right = 1014.0
 margin_bottom = 590.0
 rect_min_size = Vector2( 260, 0 )
+size_flags_horizontal = 8
 size_flags_vertical = 3
+custom_fonts/font = ExtResource( 4 )
 text = "
 "
 align = 2
+autowrap = true
 
 [node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer"]
 margin_left = 10.0
@@ -52,6 +56,7 @@ margin_bottom = 29.0
 size_flags_horizontal = 3
 
 [node name="PlayersWaitingLabel" type="Label" parent="MarginContainer/VBoxContainer/HBoxContainer"]
+modulate = Color( 1, 1, 1, 0 )
 margin_right = 260.0
 margin_bottom = 29.0
 rect_min_size = Vector2( 260, 0 )

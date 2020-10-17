@@ -34,6 +34,19 @@ func _get_misc_data(extra_info):
 		return {}
 	return func_info[0].get_ref().callv(func_info[1], [extra_info])
 
+#func_name should take one argument: the
+#extra_info sent by the requestee, and return an info dict to be checked by sender
+#in order to confirm we are an appropriate handshake server
+var _node_and_func_for_am_i_handshake_request = [weakref(null), null]
+func set_node_and_func_for_am_i_handshake_request(node, func_name):
+	_node_and_func_for_am_i_handshake_request[0] = weakref(node)
+	_node_and_func_for_am_i_handshake_request[1] = func_name
+
+func _get_am_i_handshake_data(extra_info):
+	var func_info = _node_and_func_for_am_i_handshake_request
+	if func_info[0].get_ref() == null:
+		return {}
+	return func_info[0].get_ref().callv(func_info[1], [extra_info])
 
 
 
@@ -52,12 +65,7 @@ func init():
 	if _udp_socket == null:
 		_udp_socket = CUSTOM_UDP_WRAPPER_SCRIPT.new()
 		add_child(_udp_socket)
-		_udp_socket.init(
-			Network.get_network_detail(Network.DETAILS_KEY_UDP_TIMEOUT_SECS),
-			null,
-			Network._UDP_SOCKET_MINIMISATION_KEYS
-		)
-		
+		_udp_socket.set_minimisation_map(Network._UDP_SOCKET_MINIMISATION_KEYS)
 		_udp_socket.connect('packet_received', self, '_udp_packet_received')
 		_udp_socket.connect('any_packet_received', self, '_udp_any_packet_received')
 	if _udp_socket.start_listening(port) != OK:
@@ -93,10 +101,11 @@ func _udp_packet_received(data, sender_address, packet_id):
 	or not typeof(data['_idx']) == TYPE_STRING):
 		return
 	var sender_id = data['_idx'].split('|')[0]
-	
-	#host registration
-	#ignore ill-formatted data- they'll send it again
-	if data.has('host-registration') and _verify_host_registration_data_format(data):
+	if data.has('are-you-handshake') and typeof(data['are-you-handshake']) == TYPE_DICTIONARY:
+		var reply_data = _get_am_i_handshake_data(data['are-you-handshake'])
+		_udp_socket.send_data(reply_data, sender_address, packet_id)
+
+	elif data.has('host-registration') and _verify_host_registration_data_format(data):
 		_attempt_register_host(data['host-registration'], sender_id, sender_address, packet_id)
 	
 	elif data.has('join-request') and _verify_client_join_request_data_format(data):

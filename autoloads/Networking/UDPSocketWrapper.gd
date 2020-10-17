@@ -28,6 +28,7 @@ Provides:
 		  maintaining small messages. 
 	
 """
+signal broadcast_data_accumulate_replies_completed()
 signal send_data_await_reply_completed()
 #not emitted for packets arrived in reply to waiting func keys
 signal packet_received(data, sender_address, packet_id)
@@ -53,6 +54,8 @@ var _key_generator = KeyGenerator.new()
 #close it, but if someone else started us listening
 #in the meatnime, we'll keep listening.
 var _listening_num = 0
+#works same as .istening_num
+var _broadcast_enabled_num = 0
 var _local_port
 var _packet_timeout = 10
 var _data_to_add_to_every_packet
@@ -64,20 +67,18 @@ var _minified_keys_to_unminified_keys = {}
 var _outgoing_parcel_info = {}
 var _incoming_parcel_info = {}
 var _wait_infos = {}
+var _accumulator_wait_infos = {}
 
 func set_data_to_add_to_every_packet(data_to_add_to_every_packet):
 	_data_to_add_to_every_packet = data_to_add_to_every_packet
 func set_packet_timeout_secs(packet_timeout):
 	_packet_timeout = packet_timeout
+func get_packet_timeout_secs():
+	return _packet_timeout
 func set_minimisation_map(minimisation_map):
 	_unminified_keys_to_minified_keys = minimisation_map
 	for key in minimisation_map:
 		_minified_keys_to_unminified_keys[minimisation_map[key]] = key
-
-func clear():
-	_outgoing_parcel_info.clear()
-	_incoming_parcel_info.clear()
-	_wait_infos.clear()
 
 
 
@@ -85,8 +86,17 @@ func get_port():
 	return _local_port
 
 func is_listening():
-	
 	return _listening_num > 0
+
+
+func enable_broadcast():
+	_broadcast_enabled_num += 1
+	_udp_socket.set_broadcast_enabled(true)
+
+func disable_broadcast():
+	_broadcast_enabled_num -= 1
+	if _broadcast_enabled_num <= 0:
+		_udp_socket.set_broadcast_enabled(false)
 
 
 #if already listeining, will not change port but will return OK
@@ -108,19 +118,19 @@ func stop_listening(resume_wait_funcs_as_timeout=true):
 	_listening_num -= 1
 	if _listening_num > 0:
 		return
-	for wait_info in _wait_infos.values():
+	for wait_info in _wait_infos.values().duplicate():
 		if not resume_wait_funcs_as_timeout:
 			wait_info['has-reply'] = true
 			wait_info['reply-data'] = null
 		_send_data_wait_for_reply_finished(wait_info)
+	for wait_info in _accumulator_wait_infos.values().duplicate():
+		_broadcast_data_accumulate_replies_finished(wait_info)
 	if _udp_socket.is_listening():
 		_udp_socket.close()
 	_outgoing_parcel_info.clear()
 	_incoming_parcel_info.clear()
 	_wait_infos.clear()
-
-
-
+	_accumulator_wait_infos.clear()
 
 
 
@@ -152,7 +162,7 @@ func send_data(data, address, replying_to_id=null):
 #		...handle_timeout
 #else:
 #	var reply_data = func_result['reply-data']
-func send_data_wait_for_reply(data, address, replying_to_id=null):
+func send_data_wait_for_reply(data, address, replying_to_id=null, resend_timer=1, resend_timer_increment=0.5, custom_timeout=null):
 	var id = _key_generator.generate_key()
 	while _outgoing_parcel_info.has(id):
 		id = _key_generator.generate_key()
@@ -167,10 +177,12 @@ func send_data_wait_for_reply(data, address, replying_to_id=null):
 		'timed-out': false,
 		'has-reply': false, 
 		'reply-data': null, 
-		'times-sent': 0, 
-		'resend-timer': 1.0, 
+		'times-sent': 1, 
+		'resend-timer': resend_timer, 
+		'resend-timer-init': resend_timer,
+		'resend-timer-increment': resend_timer_increment,
 		'address': address,
-		'timeout': _packet_timeout,
+		'timeout': custom_timeout if custom_timeout != null else _packet_timeout,
 	}
 	_wait_infos[id] = info
 	
@@ -182,8 +194,66 @@ func send_data_wait_for_reply(data, address, replying_to_id=null):
 
 
 
+#you must call enable_broadcast before calling this.
+func broadcast_data_accumulate_replies(data, address_port, 
+num_attempts, attempt_timeout, reattempt_even_if_a_reply_has_come):
+	var id = _key_generator.generate_key()
+	while _outgoing_parcel_info.has(id):
+		id = _key_generator.generate_key()
+	
+	var info = {
+		'id': id,
+		'data': data,
+		'reply-id-to-info': {},
+		'times-to-attempt': num_attempts, 
+		'attempt-timeout': attempt_timeout, 
+		'attempt-timer': attempt_timeout,
+		'reattempt-even-if-reply': reattempt_even_if_a_reply_has_come,
+		'address': ["255.255.255.255", address_port]
+	}
+	_accumulator_wait_infos[id] = info
+	
+	var func_key = fapi.get_add_key()
+	info['func-key'] = func_key
+	_parcel_send_packet(info['data'], info['id'], null, info['address'])
+	return func_key
 
 
+
+func _broadcast_data_accumulate_replies_finished(info):
+	var id = info['id']
+	_accumulator_wait_infos.erase(id)
+	
+	var was_abandoned = fapi.set_info_for_completed_func(info['func-key'], {
+		'replies': info['reply-id-to-info'].values(),
+	})
+	if not was_abandoned:
+		emit_signal('broadcast_data_accumulate_replies_completed')
+
+
+func _send_data_wait_for_reply_finished(info):
+	var id = info['id']
+	_wait_infos.erase(id)
+	
+	var was_abandoned = fapi.set_info_for_completed_func(info['func-key'], {
+		'timed-out': not info['has-reply'], 
+		'reply-data': info['reply-data'],
+		'reply-id': info['reply-id'],
+		'sent-id': info['id'],
+		'address': info['address'] if info.has('address') else null
+	})
+	if not was_abandoned:
+		emit_signal('send_data_await_reply_completed')
+
+#for when you dont care about it really, but still want to 
+#get the message through, 
+func abandon_send_data_wait_for_reply(func_key, cancel_sending=true):
+	if cancel_sending:
+		for id in _wait_infos:
+			if _wait_infos[id]['func-key'] == func_key:
+				_wait_infos.erase(id)
+				break
+	fapi.abandon_awaiting_func_completion(func_key)
 
 
 
@@ -395,6 +465,13 @@ func _process(delta):
 				info['reply-id'] = data['id']
 				info['address'] = sender_address
 				_send_data_wait_for_reply_finished(info)
+			elif _accumulator_wait_infos.has(is_reply_to):
+				var info = {
+					'reply-id': data['id'],
+					'reply-data': data['data'],
+					'address': sender_address,
+				}
+				_accumulator_wait_infos[is_reply_to]['reply-id-to-info'][data['id']] = info
 		else:
 			emit_signal('packet_received', data['data'], sender_address, data['id'])
 	
@@ -406,45 +483,25 @@ func _process(delta):
 		else:
 			wait_info['resend-timer'] -= delta
 			if wait_info['resend-timer'] < 0:
-				wait_info['resend-timer'] = 1.0 + min(3,wait_info['times-sent']) * 1.0
-				#if wait_info['times-sent'] == 0:
-					#if wait_info['reply-id'] != null:
-						#_full_ids_received_to_reply_sent[str(wait_info['address'])+str( wait_info['reply-id'])] =  wait_info['send-data']
+				wait_info['resend-timer'] = wait_info['resend-timer-init'] + wait_info['times-sent'] * wait_info['resend-timer-increment']
 				wait_info['times-sent'] += 1
 				_parcel_send_existing_packet(wait_info['id'], wait_info['address'])
-				#_parcel_send_packet(wait_info['data'], wait_info['id'], wait_info['reply-id'], wait_info['address'])
-				#emit_signal('debug', 'resending to %s' % [wait_info['address'][0]])
 	for wait_info in timedout_waits:
 		_send_data_wait_for_reply_finished(wait_info)
-
-	
-func _send_data_wait_for_reply_finished(info):
-	var id = info['id']
-	_wait_infos.erase(id)
-	
-	var was_abandoned = fapi.set_info_for_completed_func(info['func-key'], {
-		'timed-out': not info['has-reply'], 
-		'reply-data': info['reply-data'],
-		'reply-id': info['reply-id'],
-		'sent-id': info['id'],
-		'address': info['address'] if info.has('address') else null
-	})
-	if not was_abandoned:
-		emit_signal('send_data_await_reply_completed')
-
-#for when you dont care about it really, but still want to 
-#get the message through, 
-func abandon_send_data_wait_for_reply(func_key, cancel_sending=true):
-	if cancel_sending:
-		for id in _wait_infos:
-			if _wait_infos[id]['func-key'] == func_key:
-				_wait_infos.erase(id)
-				break
-	fapi.abandon_awaiting_func_completion(func_key)
-
-
-
-
+		
+	var timedout_accumulator_waits = []
+	for wait_info in _accumulator_wait_infos.values():
+		wait_info['attempt-timer'] -= delta
+		if wait_info['attempt-timer'] < 0:
+			wait_info['times-to-attempt'] -= 1
+			if wait_info['times-to-attempt'] == 0:
+				timedout_accumulator_waits.push_back(wait_info)
+			elif not wait_info['reply-id-to-info'].empty() and not wait_info['reattempt-even-if-reply']:
+				timedout_accumulator_waits.push_back(wait_info)
+			else:
+				_parcel_send_existing_packet(wait_info['id'], wait_info['address'])
+	for wait_info in timedout_accumulator_waits:
+		_broadcast_data_accumulate_replies_finished(wait_info)
 
 
 
